@@ -25,7 +25,7 @@ This repository shows the implementation of a microservice architecture using th
 - S3 storage
 - IAM (Defining roles and permission ensuring a "need to use" policy for the services above)
 
-### Some highlights:
+### Some highlights
 - Lambda developed using:
   - Golang
     - [configuration/apply](configuration/apply/main.go)
