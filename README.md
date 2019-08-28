@@ -148,7 +148,7 @@ In order to run clone this repository, cd into it and follow the instructions:
   ```
   - List the newly created device
   ```bash 
-  curl -iv "${URL}"/"${DEVICE_ID}"
+  curl -qs "${URL}"/"${DEVICE_ID}" | jq
   ```
 
 ### 9. Delete a device
