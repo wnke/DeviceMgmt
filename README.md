@@ -99,6 +99,7 @@ In order to run clone this repository, cd into it and follow the instructions:
     cd inventory
     npm init -y 
     npm install
+    cd ..
     ```
 
 ### 2. Create a S3 bucket that will hold the code
@@ -108,10 +109,11 @@ In order to run clone this repository, cd into it and follow the instructions:
 ### 3. Package the solution
   - Push code to S3
   - Outputs a new yaml file with the S3 locations instead of local paths
+  - Remember to replace the bucket name below
   ```bash 
   aws cloudformation package \
     --template-file init.yaml \
-    --s3-bucket BUCKET_NAME_HERE \
+    --s3-bucket <BUCKET_NAME_HERE> \
     --output-template-file output.yaml
   ```
 ### 4. Deploy the stack
@@ -128,21 +130,21 @@ In order to run clone this repository, cd into it and follow the instructions:
 
 ### 6. Get the API URL
   ```bash
-  export URL=$(aws cloudformation describe-stacks
-    --stack-name devicesDeploy
-    --query "Stacks[0].Outputs[?OutputKey=='inventaryApiURL'].OutputValue"
+  export URL=$(aws cloudformation describe-stacks \
+    --stack-name devicesDeploy \
+    --query "Stacks[0].Outputs[?OutputKey=='inventaryApiURL'].OutputValue" \
     --output text)
   echo "The API URL id is ${URL}"
   ```
 ### 7. Create a new device
   ```bash
-  export DEVICE_ID=$(curl "${URL}" -d '{"name":"NamedDevice1"}' | jq -r .deviceId)` 
+  export DEVICE_ID=$(curl "${URL}" -d '{"name":"NamedDevice1"}' | jq -r .deviceId) 
   echo "The new device id is ${DEVICE_ID}"
   ```
 ### 8. List devices
   - List all devices
   ```bash
-  curl -iv "${URL}"
+  curl -qs "${URL}" | jq
   ```
   - List the newly created device
   ```bash 
@@ -156,3 +158,10 @@ In order to run clone this repository, cd into it and follow the instructions:
 
 ### 10. Confirm the logs
   - Using the Cloudwatch web interface
+
+### 11. Delete the deployment
+  ```bash 
+  aws cloudformation delete-stack \
+    --stack-name devicesDeploy
+  ```
+
