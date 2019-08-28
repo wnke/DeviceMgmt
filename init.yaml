@@ -1,0 +1,396 @@
+---
+Parameters:
+  "sapNotificationDuration":
+    Type: Number
+    Description: Number of milliseconds to wait for simulating a SAP request
+    Default: 10000
+    MinValue: 1
+  "configurationApplyLambdaRate":
+    Description: Periodic configuration rate
+    Type: String
+    Default: "rate(1 hour)"
+
+Resources:
+  "inventoryQueueSAP":
+    Type: AWS::SQS::Queue
+    Properties: 
+      VisibilityTimeout: 500
+
+  "inventoryQueueConfiguration":
+    Type: AWS::SQS::Queue
+    Properties: 
+      VisibilityTimeout: 500
+
+  "inventoryTopic":
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !GetAtt inventoryQueueSAP.Arn
+          Protocol: sqs
+        - Endpoint: !GetAtt inventoryQueueConfiguration.Arn
+          Protocol: sqs
+
+  "inventoryQueuePolicy":
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: "*"
+            Action:
+              - sqs:SendMessage
+            Resource: "*"
+            Condition:
+              ArnEquals:
+                "aws:SourceArn": !Ref inventoryTopic
+      Queues:
+        - !Ref inventoryQueueSAP
+        - !Ref inventoryQueueConfiguration
+
+  "inventoryDynamoDBTable":
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      BillingMode: PROVISIONED
+      AttributeDefinitions:
+        - AttributeName: deviceId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: deviceId
+          KeyType: HASH
+      ProvisionedThroughput: 
+        ReadCapacityUnits: "1"
+        WriteCapacityUnits: "1"
+
+  "configurationDynamoDBTable":
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      BillingMode: PROVISIONED
+      AttributeDefinitions:
+        - AttributeName: deviceId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: deviceId
+          KeyType: HASH
+      ProvisionedThroughput: 
+        ReadCapacityUnits: "1"
+        WriteCapacityUnits: "1"
+
+  "inventoryLambdaRole": 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies: 
+        - 
+          PolicyName: "inventoryLambdaCloudwatch"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                - logs:CreateLogStream
+                - logs:CreateLogGroup
+                - logs:PutLogEvents
+                Resource: "*"
+        -
+          PolicyName: "inventoryLambdaDynamoDB"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt inventoryDynamoDBTable.Arn
+        -
+          PolicyName: "inventoryLambdaQueue"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref inventoryTopic
+
+  "inventoryLambda":
+    Type: AWS::Lambda::Function
+    Properties: 
+      Code: inventory/
+      Handler: index.handler
+      Runtime: nodejs10.x
+      Role: !GetAtt inventoryLambdaRole.Arn
+      Environment:
+        Variables: 
+          INVENTORY_TABLE: !Ref inventoryDynamoDBTable
+          INVENTORY_TOPIC: !Ref inventoryTopic
+          IS_LOCAL: "false"
+
+  "inventoryApiGateway":
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: "inventory"
+      Description: "Inventory ReST API"
+      EndpointConfiguration:
+        Types: 
+          - REGIONAL
+
+  "inventoryApiResource": 
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref inventoryApiGateway
+      ParentId: !GetAtt inventoryApiGateway.RootResourceId
+      PathPart: "{proxy+}"
+
+
+  "inventoryApiMethod":
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: ANY
+      RestApiId: !Ref inventoryApiGateway
+      ResourceId: !Ref inventoryApiResource
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Arn}/invocations
+          - Arn: !GetAtt inventoryLambda.Arn
+        PassthroughBehavior: WHEN_NO_MATCH
+
+  "inventoryApiDeployment":
+    Type: "AWS::ApiGateway::Deployment"
+    DependsOn:
+      - "inventoryApiMethod"
+    Properties:
+      RestApiId: !Ref inventoryApiGateway
+      StageName: "dev"
+
+  "inventoryLambdaInvokePermission":
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt inventoryLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${inventoryApiGateway}/*/*/*
+
+  "sapNotificationLambdaRole": 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies: 
+        - 
+          PolicyName: "sapNotificationLambdaCloudwatch"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                - logs:CreateLogStream
+                - logs:CreateLogGroup
+                - logs:PutLogEvents
+                Resource: "*"
+        -
+          PolicyName: "sapNotificationLambdaQueue"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt inventoryQueueSAP.Arn
+
+  "sapNotificationLambda":
+    Type: AWS::Lambda::Function
+    Properties: 
+      Code: sap/
+      Handler: index.handler
+      Runtime: nodejs10.x
+      Timeout: 110
+      Role: !GetAtt sapNotificationLambdaRole.Arn
+      Environment:
+        Variables: 
+          SLEEP_TIME_MS: !Ref sapNotificationDuration
+
+  "sapNotificationLambdaEventSourceMapping":
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      Enabled: true
+      EventSourceArn: !GetAtt inventoryQueueSAP.Arn
+      FunctionName: !GetAtt sapNotificationLambda.Arn
+
+  "configurationStoreLambdaRole": 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies: 
+        - 
+          PolicyName: "configurationStoreLambdaCloudwatch"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                - logs:CreateLogStream
+                - logs:CreateLogGroup
+                - logs:PutLogEvents
+                Resource: "*"
+        -
+          PolicyName: "configurationStoreLambdaDynamoDB"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt configurationDynamoDBTable.Arn        
+        -
+          PolicyName: "configurationStoreLambdaQueue"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt inventoryQueueConfiguration.Arn
+
+  "configurationStoreLambda":
+    Type: AWS::Lambda::Function
+    Properties: 
+      Code: configuration/store/
+      Handler: lambda-handler
+      Runtime: go1.x
+      Role: !GetAtt configurationStoreLambdaRole.Arn
+      Environment:
+        Variables: 
+          CONFIGURATION_TABLE: !Ref configurationDynamoDBTable
+
+  "configurationStoreLambdaEventSourceMapping":
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      Enabled: true
+      EventSourceArn: !GetAtt inventoryQueueConfiguration.Arn
+      FunctionName: !GetAtt configurationStoreLambda.Arn
+
+
+  "configurationApplyLambdaRole": 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies: 
+        - 
+          PolicyName: "configurationApplyLambdaCloudwatch"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                - logs:CreateLogStream
+                - logs:CreateLogGroup
+                - logs:PutLogEvents
+                Resource: "*"
+        -
+          PolicyName: "configurationApplyLambdaDynamoDB"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                Resource: !GetAtt configurationDynamoDBTable.Arn
+  
+  "configurationApplyLambda":
+    Type: AWS::Lambda::Function
+    Properties: 
+      Code: configuration/apply/
+      Handler: lambda-handler
+      Runtime: go1.x
+      Role: !GetAtt configurationApplyLambdaRole.Arn
+      Environment:
+        Variables: 
+          CONFIGURATION_TABLE: !Ref configurationDynamoDBTable
+
+  "configurationApplyLambdaScheduledRule": 
+    Type: AWS::Events::Rule
+    Properties: 
+      ScheduleExpression: !Ref configurationApplyLambdaRate
+      State: "ENABLED"
+      Targets: 
+        - Arn: !GetAtt configurationApplyLambda.Arn
+          Id: configurationApplyLambdaScheduledRule
+
+  "configurationApplyLambdaInvokePermission": 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !GetAtt configurationApplyLambda.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt configurationApplyLambdaScheduledRule.Arn
+
+Outputs:
+  "inventaryApiURL":
+    Value: !Sub "https://${inventoryApiGateway}.execute-api.${AWS::Region}.amazonaws.com/dev/inventory"
